@@ -175,7 +175,7 @@ def _register_project(path: str, name: str) -> None:
 
 
 def _discover_all_inboxes() -> list[dict]:
-    """Discover all project inboxes (global + registered projects)."""
+    """Discover all project inboxes (global + registered + filesystem scan)."""
     inboxes = [{
         "inbox": GLOBAL_INBOX,
         "archive": STORAGE_ROOT / "inbox.archive.jsonl",
@@ -184,11 +184,14 @@ def _discover_all_inboxes() -> list[dict]:
         "project_path": None,
         "is_global": True,
     }]
+    seen = {None}  # track project paths to avoid duplicates
 
+    # 1. Registered projects from projects.jsonl
     for entry in _jsonl_read(PROJECTS_FILE):
         project_path = Path(entry["path"])
-        if not project_path.is_dir():
+        if not project_path.is_dir() or str(project_path) in seen:
             continue
+        seen.add(str(project_path))
         cwbox = project_path / ".cwinbox"
         inboxes.append({
             "inbox": cwbox / "inbox.jsonl",
@@ -198,6 +201,20 @@ def _discover_all_inboxes() -> list[dict]:
             "project_path": str(project_path),
             "is_global": False,
         })
+
+    # 2. CWD-based discovery: walk up from current directory
+    project_inbox, project_name = _find_project_inbox()
+    if project_inbox and str(project_inbox.parent) not in seen:
+        seen.add(str(project_inbox.parent))
+        inboxes.append({
+            "inbox": project_inbox / "inbox.jsonl",
+            "archive": project_inbox / "archive.jsonl",
+            "replies": project_inbox / "replies.jsonl",
+            "project_name": project_name,
+            "project_path": str(project_inbox.parent),
+            "is_global": False,
+        })
+
     return inboxes
 
 
@@ -273,18 +290,15 @@ def inbox_poll(project: str | None = None, limit: int = 20) -> dict[str, Any]:
                 r["_project"] = inbox_info["project_name"] or "global"
                 results.append(r)
 
-    # Check for replies to our messages
-    replies = _jsonl_read(_resolve_inbox_paths()["replies"])
-    unread_replies = [r for r in replies if not r.get("read", False)]
-    if unread_replies:
-        # Mark replies as read
-        for r in unread_replies:
-            r["read"] = True
-        # Rewrite replies file (simplified — for production, use atomic pattern)
-        paths = _resolve_inbox_paths()
-        # This is a simplification. Full atomicity would require the same rename pattern.
-        # For MVP, we accept eventual consistency on replies.
-        results.extend([{**r, "_is_reply": True} for r in unread_replies])
+    # Check for replies from ALL inboxes (not just current CWD)
+    for inbox_info in inboxes:
+        reply_records = _jsonl_read(inbox_info["replies"])
+        unread_replies = [r for r in reply_records if not r.get("read", False)]
+        if unread_replies:
+            for r in unread_replies:
+                r["read"] = True
+                r["_project"] = inbox_info["project_name"] or "global"
+            results.extend([{**r, "_is_reply": True} for r in unread_replies])
 
     return {
         "messages": results,
