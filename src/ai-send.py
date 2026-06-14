@@ -20,7 +20,7 @@ for d in [cwd] + list(cwd.parents):
 inbox_dir.mkdir(parents=True, exist_ok=True)
 inbox_file = inbox_dir / "inbox.jsonl"
 
-text = sys.argv[1] if len(sys.argv) > 1 else sys.stdin.read().strip()
+text = sys.argv[1] if len(sys.argv) > 1 and sys.argv[1] else sys.stdin.read().strip()
 role = sys.argv[2] if len(sys.argv) > 2 else "worker"
 priority = int(sys.argv[3]) if len(sys.argv) > 3 else 3
 reply_token = sys.argv[4] if len(sys.argv) > 4 else ""
