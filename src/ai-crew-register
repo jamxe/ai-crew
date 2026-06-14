@@ -1,0 +1,125 @@
+#!/usr/bin/env bash
+# ai-crew-register — register the ai-crew MCP server with OpenCode
+#
+# Starts the MCP server in HTTP/SSE mode on port 9876,
+# then registers it with OpenCode so its tools are available.
+#
+# Usage:
+#   ai-crew-register                    register with OpenCode (HTTP)
+#   ai-crew-register --port 9877        use custom port
+#   ai-crew-register --status           check registration status
+
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+PYTHON="python3"
+[ -f "$SCRIPT_DIR/../.venv/bin/python3" ] && PYTHON="$SCRIPT_DIR/../.venv/bin/python3"
+SERVER="$SCRIPT_DIR/server.py"
+OPENCODE="${OPENCODE:-$HOME/.opencode/bin/opencode}"
+PORT=9876
+HOST="127.0.0.1"
+ACTION="register"
+
+usage() {
+    cat <<'EOF'
+ai-crew-register — register the inbox MCP server with OpenCode
+
+Usage:
+  ai-crew-register               register + start server (default)
+  ai-crew-register --port N      use custom port
+  ai-crew-register --status      check registration
+  ai-crew-register --start       start HTTP server only (foreground)
+  ai-crew-register --stop        stop running HTTP server
+
+Registration uses OpenCode's `mcp add --url` to connect to the
+HTTP/SSE endpoint. CodeWhale uses stdio; OpenCode uses HTTP.
+Both share the same inbox files on disk.
+EOF
+}
+
+while [ $# -gt 0 ]; do
+    case "$1" in
+        -p|--port) shift; PORT="$1"; shift ;;
+        --status)  ACTION="status"; shift ;;
+        --start)   ACTION="start"; shift ;;
+        --stop)    ACTION="stop"; shift ;;
+        -h|--help) usage; exit 0 ;;
+        *) shift ;;
+    esac
+done
+
+URL="http://${HOST}:${PORT}/sse"
+
+case "$ACTION" in
+    status)
+        echo "═══ MCP Registration Status ═══"
+        echo ""
+        echo "CodeWhale:"
+        codewhale mcp list 2>&1 | grep -i ai-crew || echo "  not registered"
+        echo ""
+        echo "OpenCode:"
+        "$OPENCODE" mcp list 2>&1 | grep -i ai-crew || echo "  not registered"
+        echo ""
+        echo "Server (HTTP):"
+        if lsof -i ":$PORT" -sTCP:LISTEN 2>/dev/null | grep -q .; then
+            echo "  running on port $PORT"
+        else
+            echo "  not running"
+        fi
+        ;;
+
+    start)
+        echo "Starting ai-crew MCP server on $URL" >&2
+        exec "$PYTHON" "$SERVER" --port "$PORT" --host "$HOST"
+        ;;
+
+    stop)
+        PID=$(lsof -ti ":$PORT" -sTCP:LISTEN 2>/dev/null || true)
+        if [ -n "$PID" ]; then
+            kill "$PID" 2>/dev/null && echo "Stopped server (PID $PID)"
+        else
+            echo "No server running on port $PORT"
+        fi
+        ;;
+
+    register)
+        # Step 1: Stop any existing server on this port
+        OLD_PID=$(lsof -ti ":$PORT" -sTCP:LISTEN 2>/dev/null || true)
+        if [ -n "$OLD_PID" ]; then
+            kill "$OLD_PID" 2>/dev/null || true
+            sleep 1
+        fi
+
+        # Step 2: Start server in background
+        echo "🚀 Starting ai-crew MCP server on $URL..." >&2
+        "$PYTHON" "$SERVER" --port "$PORT" --host "$HOST" &
+        SERVER_PID=$!
+        sleep 2
+
+        # Verify it's running
+        if ! kill -0 "$SERVER_PID" 2>/dev/null; then
+            echo "❌ Server failed to start" >&2
+            exit 1
+        fi
+        echo "   Server PID: $SERVER_PID" >&2
+
+        # Step 3: Register with OpenCode
+        echo "📡 Registering with OpenCode..." >&2
+        if "$OPENCODE" mcp add ai-crew --url "$URL" 2>&1; then
+            echo "✅ OpenCode MCP registered: ai-crew → $URL" >&2
+        else
+            echo "⚠️  Registration may have failed. Check with: ai-crew-register --status" >&2
+        fi
+
+        # Step 4: Print summary
+        echo ""
+        echo "═══ Setup Complete ═══"
+        echo "CodeWhale: codewhale mcp list        (stdio, always available)"
+        echo "OpenCode:  $URL          (HTTP, server PID $SERVER_PID)"
+        echo "Inbox:     ~/.cwinbox/"
+        echo ""
+        echo "To stop:   ai-crew-register --stop"
+        echo "To start:  ai-crew-register --start  (foreground)"
+        echo "Status:    ai-crew-register --status"
+        ;;
+esac

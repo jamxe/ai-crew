@@ -1,0 +1,94 @@
+#!/usr/bin/env bash
+# ai-ask — send a question to the AI inbox and wait for a reply (blocking)
+# Usage: ai-ask "question"  or  cmd | ai-ask "context"
+
+PYTHON=/Users/jamarixe/CascadeProjects/ai-crew/.venv/bin/python3
+SEND=/Users/jamarixe/CascadeProjects/ai-crew/src/ai-send.py
+
+TIMEOUT=300
+ROLE="worker"
+TEXT=""
+
+while [ $# -gt 0 ]; do
+    case "$1" in
+        -t|--timeout) shift; TIMEOUT="$1"; shift ;;
+        -r|--role)    shift; ROLE="$1"; shift ;;
+        -h|--help)    echo "ai-ask [-t seconds] [-r role] <question>"; echo "cmd | ai-ask <context>"; exit 0 ;;
+        *) TEXT="$*"; break ;;
+    esac
+done
+
+# Pipe support
+if [ ! -t 0 ]; then
+    PIPED=$(cat)
+    [ -n "$PIPED" ] && TEXT="$TEXT
+
+--- piped ---
+$PIPED"
+fi
+
+[ -z "$TEXT" ] && { echo "ai-ask: need a question or piped input"; exit 1; }
+
+# ── Step 1: Send message via ai-send.py ──────────────────────────────────────
+SEND_RESULT=$(echo "$TEXT" | "$PYTHON" "$SEND" "" "$ROLE" 3 2>&1) || { echo "FAILED to send: $SEND_RESULT"; exit 1; }
+MSG_ID=$(echo "$SEND_RESULT" | python3 -c 'import json,sys;print(json.load(sys.stdin)["id"])' 2>/dev/null)
+PROJ=$(echo "$SEND_RESULT" | python3 -c 'import json,sys;print(json.load(sys.stdin)["project"])' 2>/dev/null)
+echo "📨 Sent to $PROJ (${MSG_ID:0:8}...)" >&2
+
+# ── Step 2: Find inbox_dir for polling ───────────────────────────────────────
+INBOX_DIR=$("$PYTHON" -c "
+from pathlib import Path
+cwd = Path.cwd().resolve()
+for d in [cwd] + list(cwd.parents):
+    cb = d / '.cwinbox'
+    if cb.is_dir() or (d / '.ai-crew.json').exists():
+        print(str(cb))
+        exit(0)
+print(str(Path.home() / '.cwinbox'))
+" 2>/dev/null)
+
+REPLIES_FILE="$INBOX_DIR/replies.jsonl"
+echo "⏳ Waiting for reply (timeout: ${TIMEOUT}s)..." >&2
+
+# ── Step 3: Poll replies.jsonl ───────────────────────────────────────────────
+elapsed=0
+interval=2
+while [ "$elapsed" -lt "$TIMEOUT" ]; do
+    if [ -f "$REPLIES_FILE" ]; then
+        REPLY=$("$PYTHON" -c "
+import json, sys
+target, path = sys.argv[1], sys.argv[2]
+try:
+    with open(path) as f:
+        for line in f:
+            line = line.strip()
+            if not line: continue
+            try:
+                r = json.loads(line)
+                if r.get('message_id') == target and not r.get('read', False):
+                    print(json.dumps(r))
+                    sys.exit(0)
+            except json.JSONDecodeError:
+                continue
+except FileNotFoundError:
+    pass
+sys.exit(1)
+" "$MSG_ID" "$REPLIES_FILE" 2>/dev/null)
+
+        if [ -n "$REPLY" ]; then
+            REPLY_TEXT=$(echo "$REPLY" | python3 -c 'import json,sys;print(json.load(sys.stdin)["text"])')
+            echo ""
+            echo "📬 Reply from $PROJ:"
+            echo "$REPLY_TEXT"
+            exit 0
+        fi
+    fi
+
+    sleep "$interval"
+    elapsed=$((elapsed + interval))
+    [ $((elapsed % 10)) -eq 0 ] && echo -n "." >&2
+done
+
+echo "" >&2
+echo "⏰ No reply within ${TIMEOUT}s (msg: ${MSG_ID:0:8}...)" >&2
+exit 1

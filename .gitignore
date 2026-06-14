@@ -1,0 +1,28 @@
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+*.egg-info/
+dist/
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Inbox test data (don't commit personal messages)
+.cwinbox/
+
+# Environment
+.env
+.env.local
+*.log
+.ai-crew.json
+.cwinbox/

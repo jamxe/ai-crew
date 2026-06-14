@@ -1,0 +1,36 @@
+#!/usr/bin/env bash
+# ai-msg — send a message to the AI inbox
+# Usage: ai-msg "question"  or  cmd | ai-msg "context"
+
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+PYTHON="python3"
+[ -f "$SCRIPT_DIR/../.venv/bin/python3" ] && PYTHON="$SCRIPT_DIR/../.venv/bin/python3"
+SEND="$SCRIPT_DIR/ai-send.py"
+
+ROLE="worker"
+PRIO=3
+TEXT=""
+
+while [ $# -gt 0 ]; do
+    case "$1" in
+        -r|--role) shift; ROLE="$1"; shift ;;
+        -p|--priority) shift; PRIO="$1"; shift ;;
+        -h|--help) echo "ai-msg [-r role] [-p 1-5] <message>"; echo "cmd | ai-msg <context>"; exit 0 ;;
+        *) TEXT="$*"; break ;;
+    esac
+done
+
+if [ ! -t 0 ]; then
+    PIPED=$(cat)
+    [ -n "$PIPED" ] && TEXT="$TEXT
+
+--- piped ---
+$PIPED"
+fi
+
+[ -z "$TEXT" ] && { echo "ai-msg: need a message or piped input"; exit 1; }
+
+RESULT=$(echo "$TEXT" | "$PYTHON" "$SEND" "" "$ROLE" "$PRIO" 2>&1) || { echo "FAILED: $RESULT"; exit 1; }
+MID=$(echo "$RESULT" | python3 -c 'import json,sys;print(json.load(sys.stdin)["id"])' 2>/dev/null)
+PROJ=$(echo "$RESULT" | python3 -c 'import json,sys;print(json.load(sys.stdin)["project"])' 2>/dev/null)
+echo "📨 Sent to $PROJ (${MID:0:8}...)" >&2

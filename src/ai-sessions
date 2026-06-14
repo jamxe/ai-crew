@@ -1,0 +1,103 @@
+#!/usr/bin/env bash
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+PYTHON="python3"
+[ -f "$SCRIPT_DIR/../.venv/bin/python3" ] && PYTHON="$SCRIPT_DIR/../.venv/bin/python3"
+
+# ai-sessions — list AI sessions and inbox status
+# Usage: ai-sessions [project-filter]
+
+set -euo pipefail
+
+TOOL="all"
+PROJECT=""
+
+while [ $# -gt 0 ]; do
+    case "$1" in
+        -t|--tool) shift; TOOL="$1"; shift ;;
+        -h|--help) echo "ai-sessions [--tool codewhale|opencode|all] [filter]"; exit 0 ;;
+        *) PROJECT="$1"; shift ;;
+    esac
+done
+
+# ── CodeWhale sessions (plain text, pass through directly) ───────────────────
+if [ "$TOOL" = "all" ] || [ "$TOOL" = "codewhale" ]; then
+    echo "═══ CodeWhale Sessions ═══"
+    codewhale sessions 2>&1
+    echo ""
+fi
+
+# ── OpenCode sessions ────────────────────────────────────────────────────────
+if [ "$TOOL" = "all" ] || [ "$TOOL" = "opencode" ]; then
+    echo "═══ OpenCode Sessions ═══"
+    OPENCODE="${OPENCODE:-$HOME/.opencode/bin/opencode}"
+    "$OPENCODE" session list 2>&1 || echo "  (unavailable)"
+    echo ""
+fi
+
+# ── Inbox status ─────────────────────────────────────────────────────────────
+echo "═══ Inbox Status ═══"
+"$PYTHON" -c "
+import json
+from pathlib import Path
+
+root = Path.home() / '.cwinbox'
+if not root.exists():
+    print('  No inbox data yet. Send: ai-msg \"hello\"')
+    exit(0)
+
+# Scan all .cwinbox directories
+found = []
+for pattern in ['**/.cwinbox/inbox.jsonl', '**/.cwinbox/archive.jsonl']:
+    for f in root.glob(pattern):
+        found.append(f.parent)
+
+# Also check current dir and parents
+from pathlib import Path as P
+cwd = P.cwd().resolve()
+for d in [cwd] + list(cwd.parents)[:3]:
+    cb = d / '.cwinbox'
+    if cb.is_dir() and cb not in found:
+        found.append(cb)
+
+# Also check registered projects
+proj_file = root / 'projects.jsonl'
+if proj_file.exists():
+    with open(proj_file) as pf:
+        for line in pf:
+            try:
+                entry = json.loads(line.strip())
+                cb = P(entry['path']) / '.cwinbox'
+                if cb.is_dir() and cb not in found:
+                    found.append(cb)
+            except: pass
+
+total_unread = 0
+for inbox_dir in found:
+    name = inbox_dir.parent.name if inbox_dir.parent != root else 'global'
+    inbox_file = inbox_dir / 'inbox.jsonl'
+    archive_file = inbox_dir / 'archive.jsonl'
+    replies_file = inbox_dir / 'replies.jsonl'
+    
+    unread = 0
+    if inbox_file.exists():
+        with open(inbox_file) as f:
+            unread = sum(1 for line in f if line.strip() and not json.loads(line).get('read',False))
+    
+    archived = 0
+    if archive_file.exists():
+        with open(archive_file) as f:
+            archived = sum(1 for line in f if line.strip())
+    
+    replies = 0
+    if replies_file.exists():
+        with open(replies_file) as f:
+            replies = sum(1 for line in f if line.strip())
+    
+    total_unread += unread
+    if unread or archived or replies:
+        print(f'  {name}: {unread} unread, {archived} archived, {replies} replies')
+
+if total_unread == 0:
+    print('  All inboxes empty')
+print(f'  Storage: {root}')
+" 2>&1
