@@ -203,7 +203,7 @@ def _discover_all_inboxes() -> list[dict]:
 
 # ── MCP Server ───────────────────────────────────────────────────────────────
 
-mcp = FastMCP("ai-crew")
+mcp = FastMCP("ai-crew", host="127.0.0.1", port=9876)
 
 
 @mcp.tool()
@@ -375,22 +375,71 @@ def inbox_status() -> dict[str, Any]:
 
 # ── Entry point ──────────────────────────────────────────────────────────────
 
+def _patch_uvicorn_timeouts():
+    """Extend uvicorn timeouts so the server stays alive between requests."""
+    import uvicorn
+    import functools
+
+    _orig_sse = mcp.run_sse_async
+    @functools.wraps(_orig_sse)
+    async def _patched_sse(mount_path=None):
+        starlette_app = mcp.sse_app(mount_path)
+        config = uvicorn.Config(
+            starlette_app,
+            host=mcp.settings.host,
+            port=mcp.settings.port,
+            log_level=mcp.settings.log_level.lower(),
+            timeout_keep_alive=300,   # default 5s → 5min
+            timeout_notify=300,       # default 30s → 5min
+        )
+        server = uvicorn.Server(config)
+        await server.serve()
+
+    _orig_http = mcp.run_streamable_http_async
+    @functools.wraps(_orig_http)
+    async def _patched_http():
+        starlette_app = mcp.streamable_http_app()
+        config = uvicorn.Config(
+            starlette_app,
+            host=mcp.settings.host,
+            port=mcp.settings.port,
+            log_level=mcp.settings.log_level.lower(),
+            timeout_keep_alive=300,
+            timeout_notify=300,
+        )
+        server = uvicorn.Server(config)
+        await server.serve()
+
+    mcp.run_sse_async = _patched_sse
+    mcp.run_streamable_http_async = _patched_http
+
+
 def main():
     parser = argparse.ArgumentParser(description="cw-inbox MCP Server")
-    parser.add_argument("--port", type=int, default=0,
-                        help="Run as HTTP/SSE server on this port (default: stdio)")
-    parser.add_argument("--host", default="127.0.0.1",
-                        help="Host for HTTP server (default: 127.0.0.1)")
+    parser.add_argument("--sse", action="store_true",
+                        help="Run as HTTP/SSE server (default: stdio)")
+    parser.add_argument("--http", action="store_true",
+                        help="Run as StreamableHTTP server (default: stdio)")
+    parser.add_argument("--port", type=int, default=9876,
+                        help="Port for HTTP server (default: 9876)")
     args = parser.parse_args()
 
     STORAGE_ROOT.mkdir(parents=True, exist_ok=True)
 
-    if args.port:
-        print(f"cw-inbox MCP server starting on http://{args.host}:{args.port}/sse",
+    if args.port != 9876:
+        mcp.settings.port = args.port
+
+    if args.http:
+        _patch_uvicorn_timeouts()
+        print(f"cw-inbox StreamableHTTP: http://{mcp.settings.host}:{mcp.settings.port}/mcp",
               file=sys.stderr)
-        mcp.run(transport="sse", host=args.host, port=args.port)
+        mcp.run(transport="streamable-http")
+    elif args.sse:
+        _patch_uvicorn_timeouts()
+        print(f"cw-inbox SSE server: http://{mcp.settings.host}:{mcp.settings.port}/sse",
+              file=sys.stderr)
+        mcp.run(transport="sse")
     else:
-        # stdio mode — no printing to stdout except MCP protocol
         mcp.run(transport="stdio")
 
 
