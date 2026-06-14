@@ -185,11 +185,23 @@ Three independent CodeWhale sessions, zero shared state except JSONL files on di
 
 ## Compatibility
 
-| Client | Transport | Status |
-|---|---|---|
-| CodeWhale TUI | stdio MCP | ✅ Tested |
-| CodeWhale exec (headless) | stdio MCP | ✅ Tested |
-| OpenCode | HTTP/SSE MCP (`--port 9876`) | ✅ Ready |
+| Client | Inbox Protocol | Autonomous Worker | Notes |
+|---|---|---|---|
+| **CodeWhale TUI** | ✅ stdio MCP | ✅ Full supervisor | `inbox_send/poll/reply` native tools |
+| **CodeWhale exec** | ✅ stdio MCP | ✅ Full worker | `codewhale exec --auto` = `claude -p` |
+| **OpenCode TUI** | ✅ JSONL files | ❌ Manual only | MCP tools visible but headless `run` hangs |
+| **OpenCode run** | ⚠️ JSONL files | ❌ Blocked | See below |
+
+### OpenCode limitations
+
+OpenCode's headless mode (`opencode run`) has known issues that prevent autonomous worker operation:
+
+- MCP tool calls cause the process to hang after completion ([anomalyco/opencode#17516](https://github.com/anomalyco/opencode/issues/17516))
+- `opencode serve` + `--attach` hangs even on simple prompts ([anomalyco/opencode#5888](https://github.com/anomalyco/opencode/issues/5888))
+
+OpenCode TUI sessions can still participate in the inbox manually by reading/writing JSONL files directly. Full autonomous support depends on upstream fixes.
+
+**Recommended setup**: CodeWhale as supervisor + CodeWhale `exec` as worker. This is the same pattern SeaShell uses with `claude -p` for Claude Code.
 
 ## Troubleshooting
 
